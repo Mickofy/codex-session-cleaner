@@ -15,7 +15,27 @@ A local Python/Tkinter utility for reviewing, filtering, sorting, multi-selectin
 - **Protect** and **Unprotect** are separate, explicit actions (previously a single toggle).
 - Selection and filters work as before. Sorting **never** changes which sessions are checked.
 
-## Install and run
+## Windows desktop app (.exe)
+
+**Recommended for Windows users:** Download the portable app from GitHub Actions. Python is *not* required to run the packaged application; the installed **Codex CLI is still required** to archive or delete sessions.
+
+1. Open the [Windows app workflow](https://github.com/Mickofy/codex-session-cleaner/actions/workflows/build-windows.yml).
+2. Choose the most recent **successful run on `main`** and download the **CodexSessionCleaner-Windows-x64** artifact.
+3. Extract the downloaded ZIP and double-click **`CodexSessionCleaner.exe`**. You can create a desktop shortcut to the EXE.
+4. Before using archive/delete features, make sure the Codex CLI is installed and `codex --version` works in PowerShell. Close active Codex sessions before making changes.
+
+This is a **portable app, not an installer**: there is no setup wizard, automatic update service, or Start Menu entry. New versions are downloaded manually. The public beta EXE is **not code-signed**; Windows SmartScreen or antivirus may warn about an unfamiliar publisher. Verify the download's GitHub origin and do not disable system protections indiscriminately.
+
+**Build it yourself on Windows:**
+
+```powershell
+py -3.12 -m pip install pyinstaller==6.22.3
+py -3.12 -m PyInstaller --clean --noconfirm --onefile --windowed --name CodexSessionCleaner codex_session_cleaner.py
+```
+
+The output is at `dist/CodexSessionCleaner.exe`. The packaging workflow also runs a **non-destructive smoke test** using a temporary, empty Codex home. No real Codex session deletion is tested by CI.
+
+## Run from Python (for development)
 
 1. Extract the ZIP.
 2. Open PowerShell in the extracted `codex-session-cleaner` directory.

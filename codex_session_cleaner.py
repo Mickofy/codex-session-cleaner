@@ -635,6 +635,31 @@ class CleanerApp:
                             "\n\nIf deletion failed, inspect Codex state manually before trying again.")
 
 def main():
+    # Test the packaged Windows GUI without touching any actual Codex sessions.
+    if sys.argv[1:] == ["--smoke-test"]:
+        import tempfile
+
+        previous_home = os.environ.get("CODEX_HOME")
+        root = None
+        try:
+            with tempfile.TemporaryDirectory(prefix="codex-cleaner-smoke-") as tmp:
+                os.environ["CODEX_HOME"] = tmp
+                root = tk.Tk()
+                root.withdraw()
+                CleanerApp(root)
+                root.update_idletasks()
+        finally:
+            if root is not None:
+                root.destroy()
+            if previous_home is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = previous_home
+        return
+
+    if len(sys.argv) > 1:
+        raise SystemExit("Unsupported command-line arguments")
+
     root = tk.Tk()
     CleanerApp(root)
     root.mainloop()
