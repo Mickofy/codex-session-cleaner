@@ -2,6 +2,8 @@
 
 A local Python/Tkinter utility for reviewing, filtering, sorting, multi-selecting, archiving and deleting Codex sessions. It reads Codex session files and SQLite metadata **without editing them**. Archive/delete actions use the installed Codex CLI.
 
+> **Unofficial community tool (beta).** Not affiliated with or endorsed by OpenAI. Session formats and CLI commands may change between Codex versions. Review the **Safety** and **Limitations** sections before using destructive actions.
+
 ## What's new in v3
 
 - **Short buttons:** **Select visible**, **Clear visible**, **Clear all**, **Protect**, **Unprotect**, **Archive**, **Delete permanently**, and **Delete + backup**.
@@ -80,3 +82,9 @@ python -m unittest -v test_cleaner.py
 On Linux, UI tests require a working display, for example `xvfb-run -a python -m unittest -v test_cleaner.py`.
 
 **Validated:** 10 synthetic unit and GUI tests, including sort orders, selection preservation, protection actions, and backed-up/no-backup delete requests. **Not tested** against your local Windows Codex installation.
+
+## Open source and contributions
+
+Released under the [MIT License](LICENSE). Contributions and issue reports are welcome. Please do not attach real Codex session transcripts, local indexes, credentials, or backups to public issues.
+
+GitHub Actions runs Windows core tests and Linux GUI tests under a virtual display. These automated tests use synthetic fixtures and mocks; they **do not** validate permanent deletion on real Codex installations.

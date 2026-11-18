@@ -1,0 +1,31 @@
+# Python and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+build/
+dist/
+*.spec
+
+# Local Codex sessions, indexes, and cleaner state
+.codex/
+CodexSessionCleaner/
+backups/
+protected.json
+*.jsonl
+*.sqlite
+*.sqlite-*
+*.db
+*.zip
+
+# Local environment and OS files
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
