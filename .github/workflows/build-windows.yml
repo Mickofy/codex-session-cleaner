@@ -1,0 +1,43 @@
+name: Windows app
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portable-exe:
+    name: Build portable Windows EXE
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+
+      - name: Install packaging dependency
+        run: python -m pip install pyinstaller==6.22.3
+
+      - name: Run core tests
+        run: python -m unittest -v test_cleaner.CleanerTests
+
+      - name: Bundle Tkinter desktop app
+        run: python -m PyInstaller --clean --noconfirm --onefile --windowed --name CodexSessionCleaner codex_session_cleaner.py
+
+      - name: Smoke-test packaged EXE without real sessions
+        run: python -c "import subprocess; subprocess.run(['dist/CodexSessionCleaner.exe', '--smoke-test'], check=True, timeout=45)"
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexSessionCleaner-Windows-x64
+          path: dist/CodexSessionCleaner.exe
+          if-no-files-found: error
+          retention-days: 30
