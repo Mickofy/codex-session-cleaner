@@ -41,6 +41,58 @@ def fixture(home: Path, *, name="demo", prompt="Improve storefront filters", age
 
 
 class CleanerTests(unittest.TestCase):
+    def test_process_detection_excludes_cleaner_and_helper_processes(self):
+        processes = [
+            mod.ProcessInfo(os.getpid(), "codex.exe"),
+            mod.ProcessInfo(9708, "CodexSessionCleaner.exe"),
+            mod.ProcessInfo(29428, "SessionCleanerHelper.exe"),
+        ]
+        with (patch.object(mod.sys, "platform", "win32"),
+              patch.object(mod.sys, "executable", "SessionCleanerHelper.exe"),
+              patch.object(mod, "_windows_processes", return_value=processes)):
+            self.assertIs(mod.codex_running(), False)
+
+    def test_process_detection_finds_exact_codex_process_names(self):
+        for image_name in ("codex.exe", "Codex-App-Server.exe"):
+            with self.subTest(image_name=image_name), \
+                 patch.object(mod.sys, "platform", "win32"), \
+                 patch.object(mod, "_windows_processes", return_value=[mod.ProcessInfo(1234, image_name)]):
+                self.assertIs(mod.codex_running(), True)
+
+    def test_process_detection_finds_codex_desktop_by_package_path(self):
+        process = mod.ProcessInfo(1234, "ChatGPT.exe")
+        with (patch.object(mod.sys, "platform", "win32"),
+              patch.object(mod, "_windows_processes", return_value=[process]),
+              patch.object(mod, "_process_image_path", return_value=(
+                  r"C:\Program Files\WindowsApps\OpenAI.Codex_26.1.2.0_x64__abc\app\ChatGPT.exe"))):
+            self.assertIs(mod.codex_running(), True)
+
+    def test_process_detection_ignores_unrelated_chatgpt_shell(self):
+        process = mod.ProcessInfo(1234, "ChatGPT.exe")
+        with (patch.object(mod.sys, "platform", "win32"),
+              patch.object(mod, "_windows_processes", return_value=[process]),
+              patch.object(mod, "_process_image_path", return_value=(
+                  r"C:\Program Files\ChatGPT\ChatGPT.exe"))):
+            self.assertIs(mod.codex_running(), False)
+
+    def test_process_detection_failure_is_unavailable(self):
+        with patch.object(mod.sys, "platform", "win32"), \
+             patch.object(mod, "_windows_processes", side_effect=OSError("access denied")):
+            self.assertIsNone(mod.codex_running())
+
+        with (patch.object(mod.sys, "platform", "win32"),
+              patch.object(mod, "_windows_processes", return_value=[mod.ProcessInfo(1234, "ChatGPT.exe")]),
+              patch.object(mod, "_process_image_path", side_effect=OSError("access denied"))):
+            self.assertIsNone(mod.codex_running())
+
+    def test_process_guard_reports_active_and_unavailable_separately(self):
+        active = mod.process_guard_message(True)
+        unavailable = mod.process_guard_message(None)
+        self.assertIsNone(mod.process_guard_message(False))
+        self.assertIn("is running", active)
+        self.assertIn("unavailable", unavailable)
+        self.assertNotEqual(active, unavailable)
+
     def test_discover_and_restrictions(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
@@ -217,6 +269,22 @@ class CleanerGuiTests(unittest.TestCase):
               patch.object(mod.subprocess, "run") as run):
             self.app.run_actions("delete_permanent")
             warn.assert_called_once()
+            run.assert_not_called()
+
+    def test_process_guard_blocks_active_and_unavailable_detection(self):
+        self.app.checked_ids = {self.a}
+        for result, message_fragment in ((True, "is running"), (None, "unavailable")):
+            with self.subTest(result=result), \
+                 patch.object(mod.sys, "platform", "win32"), \
+                 patch.object(mod.shutil, "which", return_value="/mock/codex"), \
+                 patch.object(mod, "codex_running", return_value=result), \
+                 patch.object(mod.messagebox, "showerror") as error, \
+                 patch.object(mod.simpledialog, "askstring") as prompt, \
+                 patch.object(mod.subprocess, "run") as run:
+                self.app.run_actions("delete_permanent")
+            error.assert_called_once()
+            self.assertIn(message_fragment, error.call_args.args[1])
+            prompt.assert_not_called()
             run.assert_not_called()
 
 
