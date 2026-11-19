@@ -14,6 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import tkinter as tk
+from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +32,13 @@ UUID_RE = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 RECENT_HOURS = 24
 MAX_HEADER_LINES = 120
 MAX_JSONL_LINE_BYTES = 2_000_000  # Avoid reading enormous embedded tool results
+CODEX_PROCESS_NAMES = frozenset({"codex.exe", "codex-app-server.exe"})
+CODEX_DESKTOP_SHELL_NAME = "chatgpt.exe"
+TH32CS_SNAPPROCESS = 0x00000002
+PROCESS_QUERY_LIMITED_INFORMATION = 0x00001000
+ERROR_NO_MORE_FILES = 18
+ERROR_INVALID_PARAMETER = 87
+ERROR_NOT_FOUND = 1168
 
 
 def codex_home() -> Path:
@@ -176,23 +184,142 @@ def discover(home: Path, protected_ids: set[str]) -> tuple[list[Session], str]:
     return records, message
 
 
+@dataclass(frozen=True)
+class ProcessInfo:
+    pid: int
+    image_name: str
+
+
+def _windows_processes() -> list[ProcessInfo]:
+    """List process IDs and image names through Toolhelp, without tasklist/WMI."""
+    import ctypes
+
+    if sys.platform != "win32":
+        raise OSError("Windows process enumeration is unavailable on this platform")
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel32.Process32NextW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snapshot == wintypes.HANDLE(-1).value:
+        error = ctypes.get_last_error()
+        raise OSError(error, "Could not enumerate Windows processes")
+
+    processes = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            error = ctypes.get_last_error()
+            raise OSError(error, "Could not read the Windows process list")
+        while True:
+            processes.append(ProcessInfo(entry.th32ProcessID, entry.szExeFile))
+            if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                error = ctypes.get_last_error()
+                if error == ERROR_NO_MORE_FILES:
+                    break
+                raise OSError(error, "Could not read the Windows process list")
+        return processes
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+
+def _process_image_path(pid: int) -> str | None:
+    """Read one candidate process path; None means it exited during inspection."""
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        error = ctypes.get_last_error()
+        if error in {ERROR_INVALID_PARAMETER, ERROR_NOT_FOUND}:
+            return None
+        raise OSError(error, f"Could not inspect process {pid}")
+
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(length)):
+            error = ctypes.get_last_error()
+            if error in {ERROR_INVALID_PARAMETER, ERROR_NOT_FOUND}:
+                return None
+            raise OSError(error, f"Could not inspect process {pid}")
+        return buffer.value
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _is_cleaner_process(process: ProcessInfo) -> bool:
+    """Ignore this process and same-image helper processes from the one-file app."""
+    if process.pid == os.getpid():
+        return True
+    cleaner_names = {"codexsessioncleaner.exe", Path(sys.executable).name.casefold()}
+    return process.image_name.casefold() in cleaner_names
+
+
+def _is_codex_desktop_path(image_path: str) -> bool:
+    """Only treat the ChatGPT shell as Codex when it belongs to the Codex MSIX."""
+    components = image_path.replace("/", "\\").casefold().split("\\")
+    return any(component.startswith("openai.codex_") for component in components)
+
+
 def codex_running() -> bool | None:
-    """Conservative Windows CLI/app guard; None when detection cannot run."""
+    """Return True/False for Codex activity, or None if inspection is unavailable."""
     if sys.platform != "win32":
         return None
     try:
-        proc = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
-                              capture_output=True, text=True, timeout=10, check=False)
-        if proc.returncode:
-            return None
-        # Match executable name in first CSV column, not arbitrary text.
-        for line in proc.stdout.splitlines():
-            head = line.split('","', 1)[0].strip('"').casefold()
-            if head in {"codex.exe", "codex-app-server.exe"}:
+        for process in _windows_processes():
+            if _is_cleaner_process(process):
+                continue
+            image_name = process.image_name.casefold()
+            if image_name in CODEX_PROCESS_NAMES:
                 return True
+            if image_name == CODEX_DESKTOP_SHELL_NAME:
+                image_path = _process_image_path(process.pid)
+                if image_path and _is_codex_desktop_path(image_path):
+                    return True
         return False
-    except (OSError, subprocess.SubprocessError):
+    except OSError:
         return None
+
+
+def process_guard_message(running: bool | None) -> str | None:
+    """Keep an active process separate from an unavailable process check."""
+    if running is True:
+        return "Codex CLI or Desktop is running. Close it before continuing; no changes made."
+    if running is None:
+        return "Could not verify whether Codex CLI or Desktop is running. Process detection is unavailable; no changes made."
+    return None
 
 
 def filter_sessions(
@@ -560,9 +687,11 @@ class CleanerApp:
             messagebox.showerror(APP_NAME, "Codex CLI not found on PATH. Run 'codex --version' in PowerShell first.")
             return
         running = codex_running()
-        if running is not False and sys.platform == "win32":
-            messagebox.showerror(APP_NAME, "Close Codex CLI and Desktop first. Process detection is positive or unavailable; no changes made.")
-            return
+        if sys.platform == "win32":
+            guard_message = process_guard_message(running)
+            if guard_message:
+                messagebox.showerror(APP_NAME, guard_message)
+                return
 
         # Refresh the actual disk+index state rather than trusting the cached table.
         current, warning = discover(self.home, self.protected_ids)
