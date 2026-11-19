@@ -275,6 +275,7 @@ class CleanerGuiTests(unittest.TestCase):
         self.app.checked_ids = {self.a}
         for result, message_fragment in ((True, "is running"), (None, "unavailable")):
             with self.subTest(result=result), \
+                 patch.object(mod.sys, "platform", "win32"), \
                  patch.object(mod.shutil, "which", return_value="/mock/codex"), \
                  patch.object(mod, "codex_running", return_value=result), \
                  patch.object(mod.messagebox, "showerror") as error, \
